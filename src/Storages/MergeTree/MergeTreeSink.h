@@ -61,6 +61,12 @@ public:
     void onFinish() override;
     void setHasDependentMaterializedViews(bool has_dependent_views) override;
 
+    /// Commits the previous block in `consume` and the last block in `onFinish`.
+    InsertReturningPublication getInsertReturningPublication() const override
+    {
+        return InsertReturningPublication::OnNextChunk;
+    }
+
 protected:
     StorageMergeTree & storage;
     StorageMetadataPtr metadata_snapshot;

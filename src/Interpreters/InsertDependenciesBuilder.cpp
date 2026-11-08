@@ -5,6 +5,7 @@
 #include <Access/Common/AccessType.h>
 #include <Access/Common/AccessFlags.h>
 #include <Processors/ForkProcessor.h>
+#include <Processors/Transforms/ReturningVisibilityTransform.h>
 #include <Processors/ResizeProcessor.h>
 #include <Processors/Transforms/ApplySquashingTransform.h>
 #include <Processors/Transforms/ShrinkColumnsTransform.h>
@@ -1288,31 +1289,40 @@ Chain InsertDependenciesBuilder::createChainWithDependencies(InputPort * returni
     if (!skip_destination_table)
     {
         result = Chain::concat(std::move(result), createPreSink(root_view));
-        Chain sink = createSink(root_view);
+        result = Chain::concat(std::move(result), createSink(root_view));
 
         if (returning_input)
         {
-            /// Copy the data, which is going to be written into the table, to `returning_input`.
-            /// The fork is in the middle of the chain, because a chain has to end with a single output.
-            auto fork = std::make_shared<ForkProcessor>(result.getOutputHeader(), 2);
-            connect(result.getOutputPort(), fork->getInputs().front());
-            connect(fork->getOutputs().front(), sink.getInputPort());
-            connect(fork->getOutputs().back(), *returning_input);
+            /// Copy the sink output. `CHECK` and `consume` run before this fork, so a
+            /// rejected chunk never reaches `RETURNING`. Views stay on the other output
+            /// and are not delayed. A chain has to end with a single output, and
+            /// `ForkProcessor` has two, so a 1-to-1 `ResizeProcessor` carries the insert output.
+            auto publication = InsertReturningPublication::OnSuccessfulFinish;
+            if (auto * storage_sink = dynamic_cast<SinkToStorage *>(&result.getSink()))
+                publication = storage_sink->getInsertReturningPublication();
 
-            size_t num_threads = result.getNumThreads() + sink.getNumThreads();
+            const SharedHeader header = result.getOutputSharedHeader();
+            auto fork = std::make_shared<ForkProcessor>(result.getOutputHeader(), 2);
+            auto visibility = std::make_shared<ReturningVisibilityTransform>(header, publication);
+            auto main_output = std::make_shared<ResizeProcessor>(header, 1, 1);
+
+            connect(result.getOutputPort(), fork->getInputs().front());
+            connect(fork->getOutputs().front(), main_output->getInputs().front());
+            connect(fork->getOutputs().back(), visibility->getInputs().front());
+            connect(visibility->getOutputs().front(), *returning_input);
+
+            const size_t num_threads = result.getNumThreads();
             QueryPlanResourceHolder resources = result.detachResources();
-            resources.append(sink.detachResources());
 
             Processors processors = std::move(result.getProcessors());
             processors.push_back(std::move(fork));
-            processors.splice(processors.end(), std::move(sink.getProcessors()));
+            processors.push_back(std::move(visibility));
+            processors.push_back(std::move(main_output));
 
             result = Chain(std::move(processors));
             result.attachResources(std::move(resources));
             result.setNumThreads(num_threads);
         }
-        else
-            result = Chain::concat(std::move(result), std::move(sink));
     }
 
     // *Log storages have method `noPushingToViewsOnInserts` returned `true`.

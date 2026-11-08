@@ -77,6 +77,12 @@ public:
     void onFinish() override;
     void setHasDependentMaterializedViews(bool has_dependent_views) override;
 
+    /// Commits the previous block in `consume` and the last block in `onFinish`.
+    InsertReturningPublication getInsertReturningPublication() const override
+    {
+        return InsertReturningPublication::OnNextChunk;
+    }
+
     String getName() const override { return "ReplicatedMergeTreeSink"; }
 
     /// For `ATTACH`ing existing data on filesystem. `RESTORE` paths use `deduplicate_part = false`

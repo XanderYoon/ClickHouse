@@ -1,5 +1,6 @@
 #pragma once
 #include <Storages/TableLockHolder.h>
+#include <Processors/Sinks/InsertReturningPublication.h>
 #include <Processors/Transforms/ExceptionKeepingTransform.h>
 
 namespace DB
@@ -23,6 +24,13 @@ public:
 
     virtual void setHasDependentMaterializedViews(bool /*has_dependent_views*/) {}
 
+    /// The chunk is visible to `RETURNING` only after `onFinish`.
+    /// Sinks that publish earlier override this. See `InsertReturningPublication`.
+    virtual InsertReturningPublication getInsertReturningPublication() const
+    {
+        return InsertReturningPublication::OnSuccessfulFinish;
+    }
+
 protected:
     virtual void consume(Chunk & chunk) = 0;
 
@@ -45,6 +53,12 @@ public:
     using SinkToStorage::SinkToStorage;
     std::string getName() const override { return "NullSinkToStorage"; }
     void consume(Chunk &) override {}
+
+    /// `consume` discards the chunk. A later failure does not restore it.
+    InsertReturningPublication getInsertReturningPublication() const override
+    {
+        return InsertReturningPublication::OnConsume;
+    }
 };
 
 using SinkPtr = std::shared_ptr<SinkToStorage>;
